@@ -1,4 +1,7 @@
 # gym-longicontrol
+
+NOTE: gym-longicontrol for formal methods is still under construction. 
+
 We aim to combine real-world motivated RL with easy accessibility within a highly relevant problem: the stochastic longitudinal control of an autonomous vehicle.
 The [LongiControl](https://doi.org/10.5220/0010305210301037) environment consists of a data based electric vehicle model (the Downloadable Dynamometer Database [D3](https://www.anl.gov/es/downloadable-dynamometer-database) of the Argonne National Laboratory is used here) and a single-lane track with stochastic speed restrictions. The state of the agent includes the actual speed, previous acceleration, current speed limit and the next speed limit as long as it is within a visual range of 150m. The agent selects the acceleration of the vehicle and receives as a reward a combination of speed, energy consumption, jerk and a measure for speeding. 
 LongiControl could be used to elaborate various challenges within Reinforcement Learning. E.g. MORL due to excplicitly contradictory reward terms (minimize energy consumption, travel time, jerk), SafeRL (comply with speed limits) or Explainable AI (as the problem is quite easy to grasp; also see our study on this [here](https://doi.org/10.5220/0010256208740881)).
