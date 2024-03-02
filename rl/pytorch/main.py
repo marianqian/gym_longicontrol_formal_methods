@@ -8,9 +8,46 @@ import gym
 import arguments
 import sac
 
-sys.stderr.write("\x1b[2J\x1b[H")
+from torch.utils.tensorboard import SummaryWriter
 
+#This file is used for EVALUATION 
+
+
+torch.autograd.set_detect_anomaly(True)
+
+sys.stderr.write("\x1b[2J\x1b[H")
+print("Running script \n \n")
 args = arguments.get_args()
+
+
+
+if args.env_id == 'DeterministicTrack-v0':
+    env = gym.make('gym_longicontrol:' + args.env_id,
+                   car_id=args.car_id,
+                   speed_limit_positions=args.speed_limit_positions,
+                   speed_limits=args.speed_limits,
+                   reward_weights=args.reward_weights,
+                   energy_factor=args.energy_factor)
+
+elif args.env_id == 'StochasticTrack-v0':
+    env = gym.make('gym_longicontrol:' + args.env_id,
+                   car_id=args.car_id,
+                   reward_weights=args.reward_weights,
+                   energy_factor=args.energy_factor)
+elif args.env_id in ['PotentialTrack-v0', 'LogicalConstraint-v0', 'LogicalConstraintScaling-v0']: 
+    env = gym.make('gym_longicontrol:' + args.env_id,
+                   car_id=args.car_id,
+                   speed_limit_positions=args.speed_limit_positions,
+                   speed_limits=args.speed_limits,
+                   reward_weights=args.reward_weights,
+                   energy_factor=args.energy_factor)
+    ##added these for the different reward functions 
+else:
+    raise NotImplementedError
+
+
+
+'''
 if args.env_id == 'DeterministicTrack-v0':
     env = gym.make('gym_longicontrol:' + args.env_id,
                    car_id=args.car_id,
@@ -25,8 +62,13 @@ elif args.env_id == 'StochasticTrack-v0':
                    energy_factor=args.energy_factor)
 else:
     raise NotImplementedError
+    
+'''
+
 env.seed(args.seed)
 torch.manual_seed(args.seed)
+
+
 
 state_dim = env.observation_space.shape[0]
 action_dim = env.action_space.shape[0]
@@ -76,19 +118,38 @@ agent = sac.SAC(environment=env,
                 discount_factor_gamma=discount_factor_gamma,
                 soft_update_factor_tau=soft_update_factor_tau)
 
+print("\n \n Finish initializing SAC models \n \n")
+print("\n \n epochs: {} \n \n".format(num_epochs))
+
 if args.load_id is None:
+
+    print("\n \n If load_id is None \n \n")
+
     save_dname = os.path.join(os.path.dirname(__file__),
                               f'out/{args.env_id}/SAC_id{args.save_id}')
     if not os.path.exists(save_dname):
         os.makedirs(save_dname)
+
+    print("\n \n Finish creating directory \n \n ")
+
     init_policy = sac.InitPolicy()
+
+    print("\n \n Finish initializing policy \n \n")
+
     agent.init_replay_buffer(init_policy,
                              replay_buffer_capacity * buffer_init_part)
+
+    print("\n \n Finish replay buffer \n \n")
 
     history = {
         'training_steps': [],
         'steps_per_s': [],
         'eval_return': [],
+        'potential_curr_state' : [],
+        'reward_forward' : [],
+        'reward_energy': [],
+        'reward_jerk' : [],
+        'reward_safety' : [],
         'losses': {
             'q1_loss': [],
             'q2_loss': [],
@@ -104,14 +165,18 @@ if args.load_id is None:
           file=open(os.path.join(save_dname, f'seed{args.seed}.out'), 'w'))
 
 else:
+    print("\n \n Loading in state dicts \n \n ")
+
     load_dname = os.path.join(os.path.dirname(__file__),
-                              f'out/{args.env_id}/SAC_id{args.load_id}')
+                              f'out\\{args.env_id}\\SAC_id{args.load_id}')
     if not os.path.exists(load_dname):
         raise ValueError(
             f'A model for {args.env_id} with load_id={args.load_id} '
             'does not exist!')
     save_dname = load_dname
-    checkpoint = torch.load(os.path.join(load_dname, f'seed{args.seed}.tar'))
+    checkpoint = torch.load(os.path.join(load_dname, f'seed{args.seed}.tar'), map_location=torch.device('cpu'))
+
+    print("\n \n Finish loading in tar file \n \n")
 
     agent.q1_function.load_state_dict(checkpoint['q1_function_state_dict'])
     agent.q2_function.load_state_dict(checkpoint['q2_function_state_dict'])
@@ -131,6 +196,8 @@ else:
     agent.alpha_optimizer.load_state_dict(
         checkpoint['alpha_optimizer_state_dict'])
 
+    print("\n \n Finish loading state dicts \n \n")
+
     if visualize:
         agent.do_visualization(record_mode, save_dname)
         exit()
@@ -146,23 +213,69 @@ else:
           f'{"return":>11}|{"value loss":>11}' + '\n' + 59 * '_',
           file=open(os.path.join(save_dname, f'seed{args.seed}.out'), 'a'))
 
+#setting up tensorboard
+writer = SummaryWriter(f'runs/{args.env_id}-{args.save_id}-{args.seed}')
+#changed to include which environment this is in using args.env_id
+
+best_reward = -20000 
+
 for epoch in range(num_epochs):
+    print("\n \n Training epoch number {} \n \n".format(epoch))
+    
     t0 = time.time()
     agent.do_training(num_steps_per_epoch)
     t1 = time.time()
 
     if epoch % 10 == 0:
-        mean_return, dones = agent.do_evaluation(num_evaluation_episodes,
-                                                 record_mode, save_dname)
+        #runs a test episode (10 times)
+        mean_return, dones, potential, reward_forward, reward_energy, reward_jerk, reward_safety = agent.do_evaluation(num_evaluation_episodes,
+                                                                                                record_mode, save_dname)
 
         # history
         history['training_steps'].append(
             (prev_epoch + epoch + 1) * num_steps_per_epoch)
         history['steps_per_s'].append(int(num_steps_per_epoch / (t1 - t0)))
         history['eval_return'].append(mean_return)
+
+        history['potential_curr_state'].append(potential)
+        history['reward_forward'].append(reward_forward)
+        history['reward_energy'].append(reward_energy)
+        history['reward_jerk'].append(reward_jerk)
+        history['reward_safety'].append(reward_safety)
+
         for key in history['losses']:
             history['losses'][key].append(agent.losses[key])
         np.save(os.path.join(save_dname, f'seed{args.seed}.npy'), history)
+
+        if mean_return > best_reward: 
+            best_reward = mean_return
+            torch.save(
+            {
+                'q1_function_state_dict':
+                agent.q1_function.state_dict(),
+                'q2_function_state_dict':
+                agent.q2_function.state_dict(),
+                'value_function_state_dict':
+                agent.value_function.state_dict(),
+                'policy_function_state_dict':
+                agent.policy_function.state_dict(),
+                'log_alpha':
+                agent.log_alpha,
+                'q1_optimizer_state_dict':
+                agent.q1_function_optimizer.state_dict(),
+                'q2_optimizer_state_dict':
+                agent.q2_function_optimizer.state_dict(),
+                'value_optimizer_state_dict':
+                agent.value_function_optimizer.state_dict(),
+                'policy_optimizer_state_dict':
+                agent.policy_function_optimizer.state_dict(),
+                'alpha_optimizer_state_dict':
+                agent.alpha_optimizer.state_dict(),
+                'epoch':
+                prev_epoch + epoch,
+                'history':
+                history
+            }, os.path.join(save_dname, f'best_reward_model.tar'))
 
         # save agent
         torch.save(
@@ -200,3 +313,13 @@ for epoch in range(num_epochs):
               f'{history["eval_return"][-1]:>11.2f}',
               f'{history["losses"]["value_loss"][-1]:>11.5f}',
               file=open(os.path.join(save_dname, f'seed{args.seed}.out'), 'a'))
+
+        writer.add_scalar('eval_return', mean_return, epoch)
+        writer.add_scalar('potential_curr_state', potential, epoch) #average value of computing boundaryDist function of current state
+        writer.add_scalar('reward_forward', reward_forward, epoch)
+        writer.add_scalar('reward_energy', reward_energy, epoch)
+        writer.add_scalar('reward_jerk', reward_jerk, epoch)
+        writer.add_scalar('reward_safety', reward_safety, epoch) 
+        #average reward from extra reward for safety from potential based shaping 
+        #potential is calculated through boundaryDist, so safety = relationship btwn potential of current and previous state
+        

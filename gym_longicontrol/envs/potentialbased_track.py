@@ -10,8 +10,9 @@ from gym.utils import seeding
 import monitorfunc
 import math
 
+#Modified after Deterministic Track, using for training 
 
-class DeterministicTrack(gym.Env):
+class PotentialTrack(gym.Env):
     metadata = {'render.modes': ['human', 'rgb_array']}
 
     def __init__(self,
@@ -221,7 +222,7 @@ class DeterministicTrack(gym.Env):
         }
 
 
-        reward_list, boundaryDist_curr = self.get_reward()
+        reward_list, boundaryDist_curr, pot_reward = self.get_reward()
         info = {
             'position': self.position,
             'velocity': self.velocity * 3.6,
@@ -230,10 +231,13 @@ class DeterministicTrack(gym.Env):
             'time': self.time,
             'energy': self.total_energy_kWh,
             'potential_curr_state' : boundaryDist_curr,
-            'reward_list' : reward_list
+            'reward_list' : reward_list,
+            'potential' : pot_reward
         }
         state = self.feature_scaling(self.get_state())
-        reward = np.array(reward_list).dot(np.array(self.reward_weights))
+        reward = np.array(reward_list).dot(np.array(self.reward_weights)) + pot_reward 
+        #adding potential reward 
+
         return state, reward, self.done, info
 
     def reset(self):
@@ -341,35 +345,9 @@ class DeterministicTrack(gym.Env):
         pot_prev = monitorfunc.potential_func(self.monitor_prev, self.monitor_param_prev)
         pot_reward = monitorfunc.potential_reward(discount, pot_cur, pot_prev)
 
-        #reward_shock = pot_reward #should be positive 
-
-        #reward_list = [ -reward_forward, -reward_energy, -reward_jerk, -reward_shock]
-
-
-        idbool = pot_cur.id < 0 
-        valbool = pot_cur.val < 0 
-        '''
-        print("id")
-        print(pot_cur.id)
-        print("val") 
-        print(pot_cur.val)
-        '''
-        
-        #assert(idbool == valbool)
-        #if pot_cur.val > 0: print("val is positive")
-
-        mon_val = pot_cur.val
-        if mon_val < 0: mon_val = mon_val - 1 
-
         reward_list = [-reward_forward, -reward_energy, -reward_jerk, -reward_shock]
 
-        #reward_list = [-reward_forward, -reward_energy, -reward_jerk, reward_shock]
-        #edited reward list with Keymaera replacing safety 
-
-        #reward_list = [0, -reward_energy, -reward_jerk, reward_shock]
-        #edited reward list with Keymaera replacing safety AND forward/penalty for slow driving 
-
-        return reward_list, pot_cur #want to return pot_cur (boundaryDist value for current state)
+        return reward_list, pot_cur, pot_reward #want to return pot_cur (boundaryDist value for current state)
 
     def get_state(self):
         """

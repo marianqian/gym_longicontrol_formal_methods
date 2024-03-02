@@ -3,7 +3,8 @@ import copy
 import torch
 from torch.optim import Adam
 from torch.nn.functional import relu
-
+import os 
+from time import time
 
 def weights_init_(m):
     if isinstance(m, torch.nn.Linear):
@@ -245,10 +246,24 @@ class SAC:
         self.env.seed(2)
 
         returns = []
+        potential = []
+
+        forward = []
+        energy = []
+        jerk = []
+        safety = []
+
         dones = 0
         state = numpy_to_torch(self.env.reset())
         for _ in range(num_evaluation_episodes):
             episode_return = 0
+
+            potential_curr_state = 0 #value from boundaryDist function
+            reward_forward = 0
+            reward_energy = 0
+            reward_jerk = 0
+            reward_safety = 0  
+
             while True:
                 action = self.policy_function.get_action(state,
                                                          deterministic=True)
@@ -256,41 +271,116 @@ class SAC:
                     self.env.action_space.shape)
                 next_state, reward, done, info = self.env.step(action)
                 episode_return += reward
+                potential_curr_state += (info['potential_curr_state'].val)
+
+                reward_forward += info['reward_list'][0]
+                reward_energy += info['reward_list'][1]
+                reward_jerk += info['reward_list'][2]
+                reward_safety += info['reward_list'][3]
+
 
                 state = numpy_to_torch(next_state)
 
                 if done:
                     state = numpy_to_torch(self.env.reset())
                     returns.append(episode_return)
+
+                    potential.append(potential_curr_state)
+                    forward.append(reward_forward)
+                    energy.append(reward_energy)
+                    jerk.append(reward_jerk)
+                    safety.append(reward_safety)
+
                     dones += 1
                     break
 
         self.env.np_random.set_state(random_state_np)
 
-        return np.mean(returns), dones
+        return np.mean(returns), dones, np.mean(potential), np.mean(forward), np.mean(energy), np.mean(jerk), np.mean(safety)
 
     def do_visualization(self, record=False, save_dname=None):
         if record:
             from gym import wrappers
             from time import time
             import os
-            save_dname = os.path.join(save_dname,
-                                      'videos/' + str(time()) + '/')
-            env = wrappers.Monitor(self.env, save_dname)
+
+            time_name = str(time())
+            save_dname_vid = os.path.join(save_dname,
+                                      'videos/' + time_name + '/')
+            #env = wrappers.Monitor(self.env, save_dname)
+            env = wrappers.RecordVideo(self.env, save_dname_vid)
         else:
             env = self.env
         env.seed(2)
 
         state = numpy_to_torch(env.reset())
-        episode_return = 0
+        episode_return = 0 #accumulated reward 
+        steps = 0 
+        number_violations = 0
+
+        history = {'accumulated_reward' : [],
+                   'reward_per_step': [],
+                   'timesteps': [],
+                   'number_violations': 0,
+                   'dist_from_speed_limit':[], 
+                   'position' : [], 
+                   'potential' : [],
+                   'potential_id' : []}
+
+        
+        path_time = os.path.join(save_dname, 'evals/'+ time_name)
+        os.makedirs(path_time, exist_ok=True)
+
+
+        print(f'{"timestep":>11}|{"acc":>11}|{"prev acc":>11}| {"next speed limit":>11}|{"next speed limit pos":>11}|{"curr speed limit":>11}|{"curr speed limit pos":>11}|{"prev speed limit":>11}|{"prev speed limit pos":>11}|{"track length":>11}|{"velocity":>11}|{"position":>11}| {"safety ID":>11}|{"safety value":>11}'  
+            
+            + "\n" + 59 * "_",
+            file=open(os.path.join(path_time, f'evalnum_curr.out'), 'w'))
+        
+
         while True:
             action = self.policy_function.get_action(state, deterministic=True)
             action = torch_to_numpy(action).reshape(env.action_space.shape)
             next_state, reward, done, info = env.step(action)
             episode_return += reward
+            steps += 1
+
+            dist_from_s = env.current_speed_limit - env.velocity 
+            #in m/s 
+            
 
             state = numpy_to_torch(next_state)
             env.render()
+            number_violations += env.num_violations
+
+            history['accumulated_reward'].append(episode_return)
+            history['reward_per_step'].append(reward)
+            history['timesteps'].append(steps)
+            history['number_violations'] = number_violations
+            #violations are only if the km/h value is greater (used math.floor to get to integer value)
+            history['dist_from_speed_limit'].append(dist_from_s)
+            history['position'].append(info['position'])
+            history['potential'].append(info['potential_curr_state'].val)
+            history['potential_id'].append(info['potential_curr_state'].id)
+
+            print(f'{steps:>11}',
+                f'{env.monitor_curr["acceleration"]:>11}',
+                f'{env.monitor_curr["prev_acceleration"]:>11}',
+                f'{env.monitor_curr["next_speed_limit"]:>11}',
+                f'{env.monitor_curr["next_speed_limit_position"]:>11}',
+                f'{env.monitor_curr["current_speed_limit"]:>11}',
+                f'{env.monitor_curr["current_speed_limit_position"]:>11}',
+                f'{env.monitor_curr["previous_speed_limit"]:>11}',
+                f'{env.monitor_curr["previous_speed_limit_position"]:>11}',
+                f'{env.monitor_curr["track_length"]:>11}',
+                f'{env.monitor_curr["velocity"]:>11}',
+                f'{env.monitor_curr["position"]:>11}',
+                f'{info["potential_curr_state"].id:>11}',
+                f'{info["potential_curr_state"].val:>11}',
+                file=open(os.path.join(path_time, f'evalnum_curr.out'), 'a'))
+            
+
+            np.save(os.path.join(save_dname_vid, f'eval.npy'), history)
 
             if done:
                 state = numpy_to_torch(env.reset())
@@ -344,7 +434,9 @@ class SAC:
                                                   value_target.detach())
 
         # Policy loss
-        policy_function_loss = (alpha * log_pi - q_pred_new_action).mean()
+        #policy_function_loss = (alpha * log_pi - q_pred_new_action).mean()
+        temp = alpha * log_pi - q_pred_new_action
+        policy_function_loss = torch.mean(temp)
 
         # Perhaps add regularization loss
         # mean_reg_loss = 0.001 * policy_mean.pow(2).mean()
@@ -354,18 +446,23 @@ class SAC:
         # Q-function, Value-function Policy-function update
         self.q1_function_optimizer.zero_grad()
         q1_function_loss.backward()
-        self.q1_function_optimizer.step()
+        #self.q1_function_optimizer.step()
 
         self.q2_function_optimizer.zero_grad()
         q2_function_loss.backward()
-        self.q2_function_optimizer.step()
+        #self.q2_function_optimizer.step()
 
         self.value_function_optimizer.zero_grad()
         value_function_loss.backward()
-        self.value_function_optimizer.step()
+        #self.value_function_optimizer.step()
 
         self.policy_function_optimizer.zero_grad()
         policy_function_loss.backward()
+        #self.policy_function_optimizer.step()
+
+        self.q1_function_optimizer.step()
+        self.q2_function_optimizer.step()
+        self.value_function_optimizer.step()
         self.policy_function_optimizer.step()
 
         # save losses for history
